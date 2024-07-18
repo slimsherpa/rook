@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { DeckService } from './deck.service';
 import { CardData } from '../components/card/card.component';
+import { HandScoreRecord } from '../components/hand-score-history/hand-score-history.component';
 
 export interface Player {
   id: number;
@@ -51,7 +52,7 @@ export class GameService {
   private trumpSuitSubject = new BehaviorSubject<TrumpSuit>(null);
   trumpSuit$ = this.trumpSuitSubject.asObservable();
 
-  private gamePhaseSubject = new BehaviorSubject<'bidding' | 'selectingGoDown' | 'selectingTrump' | 'playingTricks'>('bidding');
+  private gamePhaseSubject = new BehaviorSubject<'dealing' | 'bidding' | 'selectingGoDown' | 'selectingTrump' | 'playingTricks'>('dealing');
   gamePhase$ = this.gamePhaseSubject.asObservable();
 
   private currentTrickSubject = new BehaviorSubject<PlayedCard[]>([]);
@@ -75,27 +76,46 @@ export class GameService {
   private trickCountsSubject = new BehaviorSubject<{ A: number, B: number }>({ A: 0, B: 0 });
   trickCounts$ = this.trickCountsSubject.asObservable();
 
+  private goDownSubject = new BehaviorSubject<CardData[]>([]);
+  goDown$ = this.goDownSubject.asObservable();
+
+  private handScoreSubject = new BehaviorSubject<{ A: number, B: number }>({ A: 0, B: 0 });
+  handScore$ = this.handScoreSubject.asObservable();
+
+  private handScoreHistorySubject = new BehaviorSubject<HandScoreRecord[]>([]);
+  handScoreHistory$ = this.handScoreHistorySubject.asObservable();
+
+  private currentHandPointsSubject = new BehaviorSubject<{ A: number, B: number }>({ A: 0, B: 0 });
+  currentHandPoints$ = this.currentHandPointsSubject.asObservable();
+
   constructor(private deckService: DeckService) {}
 
+  private updateTotalGameScore() {
+    const handScoreHistory = this.handScoreHistorySubject.value;
+    const totalScore = handScoreHistory.reduce(
+      (total, record) => ({
+        A: total.A + record.teamAScore,
+        B: total.B + record.teamBScore
+      }),
+      { A: 0, B: 0 }
+    );
+    this.scoreSubject.next(totalScore);
+  }
+
   startNewGame() {
-    this.deckService.shuffleDeck();
-    const hands = this.deckService.dealCards(4, 9);
-    const players: Player[] = [
-      { id: 1, name: 'Player 1', hand: hands[0], seat: 'A1', bid: null, passed: false, goDown: null },
-      { id: 2, name: 'Player 2', hand: hands[1], seat: 'B1', bid: null, passed: false, goDown: null },
-      { id: 3, name: 'Player 3', hand: hands[2], seat: 'A2', bid: null, passed: false, goDown: null },
-      { id: 4, name: 'Player 4', hand: hands[3], seat: 'B2', bid: null, passed: false, goDown: null }
+    const initialPlayers: Player[] = [
+      { id: 1, name: 'Player 1', hand: [], seat: 'A1', bid: null, passed: false, goDown: null },
+      { id: 2, name: 'Player 2', hand: [], seat: 'B1', bid: null, passed: false, goDown: null },
+      { id: 3, name: 'Player 3', hand: [], seat: 'A2', bid: null, passed: false, goDown: null },
+      { id: 4, name: 'Player 4', hand: [], seat: 'B2', bid: null, passed: false, goDown: null }
     ];
-    this.playersSubject.next(players);
+    this.playersSubject.next(initialPlayers);
+    this.dealerSeatSubject.next('A1');
+    this.gamePhaseSubject.next('dealing');
+    this.scoreSubject.next({ A: 0, B: 0 });
+    this.handScoreHistorySubject.next([]);
 
-    const widow = this.deckService.dealWidow();
-    this.widowSubject.next(widow);
-
-    this.currentBidSubject.next(65);
-    this.currentBidderSubject.next(players[0]);
-    this.bidWinnerSubject.next(null);
-    this.gamePhaseSubject.next('bidding');
-    this.trumpSuitSubject.next(null);
+    console.log('Game started with players:', initialPlayers); // Add this line for debugging
   }
 
   placeBid(playerId: number, bidAmount: number | null) {
@@ -178,6 +198,7 @@ export class GameService {
 
     this.playersSubject.next(players);
     this.gamePhaseSubject.next('selectingTrump');
+    this.goDownSubject.next(cards);
   }
 
   selectTrump(suit: TrumpSuit) {
@@ -256,19 +277,32 @@ export class GameService {
       return winner;
     });
 
-    // Update trick counts
+    const winningPlayer = this.playersSubject.value.find(p => p.id === winningCard.playerId)!;
     const winningTeam = this.getPlayerTeam(winningCard.playerId);
-    this.updateTrickCount(winningTeam);
 
-    // Set the next current player
-    const players = this.playersSubject.value;
-    const winningPlayer = players.find(p => p.id === winningCard.playerId)!;
+    const currentCounts = this.trickCountsSubject.value;
+    currentCounts[winningTeam]++;
+    this.trickCountsSubject.next(currentCounts);
 
-    // Add the trick to the history
+    // Calculate points for this trick
+    const trickPoints = currentTrick.reduce((sum, playedCard) => sum + this.getCardPoints(playedCard.card), 0);
+
+    // Update current hand points
+    const currentHandPoints = this.currentHandPointsSubject.value;
+    currentHandPoints[winningTeam] += trickPoints;
+    this.currentHandPointsSubject.next(currentHandPoints);
+
+    // Update the score
+    const currentScore = this.scoreSubject.value;
+    currentScore[winningTeam] += trickPoints;
+    this.scoreSubject.next(currentScore);
+
+    // Update trick history
     const trickHistory = this.trickHistorySubject.value;
     trickHistory.push({ cards: currentTrick, winner: winningPlayer });
     this.trickHistorySubject.next(trickHistory);
 
+    // Set the next current player
     this.currentPlayerSubject.next(winningPlayer);
 
     // Clear the current trick
@@ -296,37 +330,94 @@ export class GameService {
   }
 
   private endHand() {
-    const score = this.scoreSubject.value;
+    const trickHistory = this.trickHistorySubject.value;
     const trickCounts = this.trickCountsSubject.value;
-    const currentTrick = this.currentTrickSubject.value;
-    const bidWinner = this.bidWinnerSubject.value;
+    const bidWinner = this.bidWinnerSubject.value!;
+    const bidWinnerTeam = this.getPlayerTeam(bidWinner.id);
+    const goDown = this.goDownSubject.value;
+    const dealer = this.dealerSeatSubject.value;
 
     // Calculate points from tricks
-    const trickPoints = this.calculateHandPoints();
+  const handPoints = { A: 0, B: 0 };
+  trickHistory.forEach((trick, index) => {
+    const trickPoints = this.calculateTrickPoints(trick.cards);
+    const winningTeam = this.getPlayerTeam(trick.winner.id);
+    handPoints[winningTeam] += trickPoints;
 
-    // Add points from the GoDown
-    const goDownPoints = this.calculateGoDownPoints();
-    trickPoints[this.getPlayerTeam(currentTrick[3].playerId)] += goDownPoints;
-
-    // Add 20 points for the team that won the most tricks
-    if (trickCounts.A > trickCounts.B) {
-      trickPoints.A += 20;
-    } else if (trickCounts.B > trickCounts.A) {
-      trickPoints.B += 20;
+    // Add go-down points to the team that won the 9th trick
+    if (index === 8) {
+      handPoints[winningTeam] += this.calculateGoDownPoints(goDown);
     }
+  });
 
-    // Check if the bid was made
-    const bidWinnerTeam = this.getPlayerTeam(bidWinner!.id);
-    const bidAmount = bidWinner!.bid!;
-    if (trickPoints[bidWinnerTeam] >= bidAmount) {
-      score[bidWinnerTeam] += trickPoints[bidWinnerTeam];
-      score[bidWinnerTeam === 'A' ? 'B' : 'A'] += trickPoints[bidWinnerTeam === 'A' ? 'B' : 'A'];
-    } else {
-      score[bidWinnerTeam] -= bidAmount;
+  // Add 20 points for the team that won the most tricks
+  if (trickCounts.A > trickCounts.B) {
+    handPoints.A += 20;
+  } else if (trickCounts.B > trickCounts.A) {
+    handPoints.B += 20;
+  }
+
+  // Evaluate if the bid winner met their bid
+  const bidAmount = bidWinner.bid!;
+  const bidWinnerPoints = handPoints[bidWinnerTeam];
+
+  let finalHandScore = { A: 0, B: 0 };
+  if (bidWinnerPoints >= bidAmount) {
+    // Bid winner met or exceeded their bid
+    finalHandScore[bidWinnerTeam] = handPoints[bidWinnerTeam];
+    finalHandScore[bidWinnerTeam === 'A' ? 'B' : 'A'] = handPoints[bidWinnerTeam === 'A' ? 'B' : 'A'];
+  } else {
+    // Bid winner didn't meet their bid
+    finalHandScore[bidWinnerTeam] = -bidAmount;
+    finalHandScore[bidWinnerTeam === 'A' ? 'B' : 'A'] = handPoints[bidWinnerTeam === 'A' ? 'B' : 'A'];
+  }
+
+    // Update hand score history
+    const handScoreRecord: HandScoreRecord = {
+      dealer: this.getPlayerNameBySeat(dealer),
+      bidWinner: bidWinner.name,
+      winningBid: bidAmount,
+      teamAScore: finalHandScore.A,
+      teamBScore: finalHandScore.B
+    };
+    const currentHistory = this.handScoreHistorySubject.value;
+    this.handScoreHistorySubject.next([...currentHistory, handScoreRecord]);
+
+    // Update total game score
+    this.updateTotalGameScore();
+
+    // Change game phase to 'dealing'
+    this.gamePhaseSubject.next('dealing');
+
+    // Rotate dealer
+    const currentDealerSeat = this.dealerSeatSubject.value;
+    const nextDealerSeat = this.getNextSeat(currentDealerSeat);
+    this.dealerSeatSubject.next(nextDealerSeat);
+
+    // Check if the game has ended
+    const totalScore = this.scoreSubject.value;
+    if (totalScore.A > 500 || totalScore.A < -250 || totalScore.B > 500 || totalScore.B < -250) {
+      this.endGame();
     }
+  }
 
-    this.scoreSubject.next(score);
-    this.resetForNextHand();
+  private getPlayerNameBySeat(seat: 'A1' | 'B1' | 'A2' | 'B2'): string {
+    const player = this.playersSubject.value.find(p => p.seat === seat);
+    return player ? player.name : 'Unknown';
+  }
+
+  private calculateTrickPoints(cards: PlayedCard[]): number {
+    return cards.reduce((sum, playedCard) => sum + this.getCardPoints(playedCard.card), 0);
+  }
+
+  private calculateGoDownPoints(goDown: CardData[]): number {
+    return goDown.reduce((sum, card) => sum + this.getCardPoints(card), 0);
+  }
+
+  private getCardPoints(card: CardData): number {
+    if (card.number === 5) return 5;
+    if (card.number === 10 || card.number === 13) return 10;
+    return 0;
   }
 
   private calculateHandPoints(): { A: number, B: number } {
@@ -341,22 +432,116 @@ export class GameService {
     return points;
   }
 
-  private calculateGoDownPoints(): number {
-    const goDown = this.bidWinnerSubject.value?.goDown || [];
-    return goDown.reduce((total, card) => total + this.getCardPoints(card), 0);
-  }
-
-  private getCardPoints(card: CardData): number {
-    if (card.number === 5) return 5;
-    if (card.number === 10 || card.number === 13) return 10;
-    return 0;
-  }
-
-  private resetForNextHand() {
-    // Reset necessary state for the next hand
-    this.trickCountsSubject.next({ A: 0, B: 0 });
+  private prepareNextHand() {
+    // Reset for next hand
     this.trickHistorySubject.next([]);
+    this.trickCountsSubject.next({ A: 0, B: 0 });
+    this.goDownSubject.next([]);
     this.gamePhaseSubject.next('bidding');
-    // ... other necessary resets ...
+    this.currentHandPointsSubject.next({ A: 0, B: 0 });
+    // Rotate dealer
+    const currentDealerSeat = this.dealerSeatSubject.value;
+    const nextDealerSeat = this.getNextSeat(currentDealerSeat);
+    this.dealerSeatSubject.next(nextDealerSeat);
+    // Deal new hands
+    this.startNewGame();
+  }
+
+  private getNextSeat(currentSeat: 'A1' | 'B1' | 'A2' | 'B2'): 'A1' | 'B1' | 'A2' | 'B2' {
+    const seatOrder: ('A1' | 'B1' | 'A2' | 'B2')[] = ['A1', 'B1', 'A2', 'B2'];
+    const currentIndex = seatOrder.indexOf(currentSeat);
+    return seatOrder[(currentIndex + 1) % 4];
+  }
+
+  redealHand() {
+    console.log('Redealing hand...');
+    
+    this.deckService.shuffleDeck();
+    const hands = this.deckService.dealCards(4, 9);
+    console.log('New hands dealt:', hands);
+  
+    if (hands.some(hand => hand.length === 0)) {
+      console.error('Error: Some hands are empty. Aborting redeal.');
+      return;
+    }
+  
+    const players = this.playersSubject.value.map((player, index) => ({
+      ...player,
+      hand: [...hands[index]],
+      bid: null,
+      passed: false,
+      goDown: null
+    }));
+    
+    console.log('New players state:', JSON.parse(JSON.stringify(players)));
+    this.playersSubject.next(players);
+  
+    const widow = this.deckService.dealWidow();
+    if (widow.length === 0) {
+      console.error('Error: Widow is empty. Aborting redeal.');
+      return;
+    }
+    this.widowSubject.next(widow);
+    console.log('New widow dealt:', widow);
+  
+    // Reset other game state
+    this.currentBidSubject.next(65);
+    this.currentBidderSubject.next(players.find(p => p.seat === this.getNextSeat(this.dealerSeatSubject.value)) || null);
+    this.bidWinnerSubject.next(null);
+    this.trumpSuitSubject.next(null);
+    this.currentHandPointsSubject.next({ A: 0, B: 0 });
+    this.trickHistorySubject.next([]);
+    this.trickCountsSubject.next({ A: 0, B: 0 });
+    this.currentTrickSubject.next([]);
+    this.goDownSubject.next([]);
+  
+    // Set the game phase to bidding
+    this.gamePhaseSubject.next('bidding');
+    console.log('Game phase set to bidding');
+  }
+
+  dealNewHand() {
+    if (this.gamePhaseSubject.value !== 'dealing') {
+      console.error('Cannot deal new hand: Not in dealing phase');
+      return;
+    }
+  
+    this.deckService.shuffleDeck();
+    const hands = this.deckService.dealCards(4, 9);
+    const players = this.playersSubject.value.map((player, index) => ({
+      ...player,
+      hand: [...hands[index]],
+      bid: null,
+      passed: false,
+      goDown: null
+    }));
+    
+    // Create a completely new array of player objects
+    const newPlayers = players.map(p => ({...p}));
+  
+    this.playersSubject.next(newPlayers);
+    const widow = this.deckService.dealWidow();
+    this.widowSubject.next([...widow]);
+    this.currentBidSubject.next(65);
+    const dealerSeat = this.dealerSeatSubject.value;
+    const firstBidderSeat = this.getNextSeat(dealerSeat);
+    this.currentBidderSubject.next(newPlayers.find(p => p.seat === firstBidderSeat) || null);
+    this.bidWinnerSubject.next(null);
+    this.trumpSuitSubject.next(null);
+    this.currentHandPointsSubject.next({ A: 0, B: 0 });
+    this.trickHistorySubject.next([]);
+    this.trickCountsSubject.next({ A: 0, B: 0 });
+    this.currentTrickSubject.next([]);
+    this.goDownSubject.next([]);
+    
+    // Ensure the game phase is set to 'bidding' after all other updates
+    this.gamePhaseSubject.next('bidding');
+  
+    console.log('New hand dealt:', newPlayers);
+  }
+  private endGame() {
+    // Implement game end logic
+    console.log('Game has ended');
+    // You might want to update the UI or trigger some end-game event
   }
 }

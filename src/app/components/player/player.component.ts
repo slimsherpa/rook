@@ -1,4 +1,4 @@
-import { Component, Input, Output, EventEmitter } from '@angular/core';
+import { Component, Input, Output, EventEmitter, OnChanges, SimpleChanges, ChangeDetectorRef } from '@angular/core';
 import { NgFor, NgIf } from '@angular/common';
 import { Player } from '../../services/game.service';
 import { CardComponent, CardData } from '../card/card.component';
@@ -11,12 +11,15 @@ import { TrumpSuit } from '../../services/game.service';
   template: `
     <div class="player" [class.active-player]="isCurrentPlayer">
       <h3>{{ player.name }} (Seat: {{ player.seat }}) {{ isCurrentPlayer ? '- Your Turn' : '' }}</h3>
+      <button *ngIf="isDealer" (click)="redealHand()">Redeal Hand</button>
+      <button *ngIf="isDealer && gamePhase === 'dealing'" (click)="dealNewHand()">Deal New Hand</button>
       <div class="hand">
         <app-card 
           *ngFor="let card of player.hand" 
           [card]="card"
           [class.selected]="isCardSelected(card)"
           [class.playable]="isCardPlayable(card)"
+          [class.unplayable]="!isCardPlayable(card)"
           (click)="selectCard(card)"
         ></app-card>
       </div>
@@ -63,6 +66,10 @@ import { TrumpSuit } from '../../services/game.service';
     .playable {
       cursor: pointer;
     }
+    .unplayable {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     .selected {
       border: 2px solid blue;
       box-shadow: 0 0 5px blue;
@@ -72,21 +79,36 @@ import { TrumpSuit } from '../../services/game.service';
 export class PlayerComponent {
   @Input() player!: Player;
   @Input() isCurrentBidder: boolean = false;
+  @Input() isDealer: boolean = false;
   @Input() isCurrentPlayer: boolean = false;
   @Input() isSelectingGoDown: boolean = false;
   @Input() isSelectingTrump: boolean = false;
   @Input() minBid: number = 65;
   @Input() leadSuit: string | null = null;
   @Input() isFirstPlayerOfTrick: boolean = false;
-  @Input() gamePhase: 'bidding' | 'selectingGoDown' | 'selectingTrump' | 'playingTricks' = 'bidding';
+  @Input() gamePhase: 'dealing' | 'bidding' | 'selectingGoDown' | 'selectingTrump' | 'playingTricks' = 'dealing';
   @Output() bid = new EventEmitter<number | null>();
   @Output() goDown = new EventEmitter<CardData[]>();
   @Output() trumpSelected = new EventEmitter<TrumpSuit>();
   @Output() cardPlayed = new EventEmitter<CardData>();
+  @Output() dealNewHandRequest = new EventEmitter<void>();
+  @Output() redealRequest = new EventEmitter<void>();
 
   selectedCard: CardData | null = null;
   selectedCards: CardData[] = [];
   trumpSuits: TrumpSuit[] = ['Red', 'Yellow', 'Black', 'Green'];
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes['player']) {
+      console.log(`Player ${this.player.name} updated:`, this.player);
+      console.log('Hand:', this.player.hand);
+      console.log('New hand:', this.player.hand);
+      //this.cdr.detectChanges();
+    }
+    if (changes['gamePhase']) {
+      console.log('Game phase changed:', this.gamePhase);
+    }
+  }
 
   isCardPlayable(card: CardData): boolean {
     if (!this.isCurrentPlayer || this.gamePhase !== 'playingTricks') return false;
@@ -140,6 +162,19 @@ export class PlayerComponent {
 
   selectTrump(suit: TrumpSuit) {
     this.trumpSelected.emit(suit);
+  }
+
+  dealNewHand() {
+    this.dealNewHandRequest.emit();
+  }
+
+  onDealNewHand() {
+    this.dealNewHandRequest.emit();
+  }
+
+  redealHand() {
+    console.log('Redeal button clicked');
+    this.redealRequest.emit();
   }
 
   playSelectedCard() {

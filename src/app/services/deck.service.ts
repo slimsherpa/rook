@@ -12,6 +12,7 @@ export class DeckService {
   }
 
   private initializeDeck() {
+    this.deck = []; // Clear the existing deck
     const suits: ('Red' | 'Yellow' | 'Black' | 'Green')[] = ['Red', 'Yellow', 'Black', 'Green'];
     const numbers = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
@@ -33,10 +34,12 @@ export class DeckService {
   }
 
   shuffleDeck() {
+    this.initializeDeck(); // Reinitialize the deck before shuffling
     for (let i = this.deck.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
     }
+    console.log('Deck shuffled:', this.deck);
   }
 
   dealCards(numPlayers: number, cardsPerPlayer: number): CardData[][] {
@@ -48,10 +51,13 @@ export class DeckService {
         }
       }
     }
+    console.log('Dealt hands:', hands);
     return hands;
   }
 
   dealWidow(): CardData[] {
-    return this.deck.splice(0, 4);
+    const widow = this.deck.splice(0, 4);
+    console.log('Dealt widow:', widow);
+    return widow;
   }
 }
